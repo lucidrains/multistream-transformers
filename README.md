@@ -1,3 +1,5 @@
+<img src="./multistream.png" width="300px"></img>
+
 ## Multistream Transformers (wip)
 
 Implementation of <a href="https://arxiv.org/abs/2107.10342">Multistream Transformers</a> in Pytorch
