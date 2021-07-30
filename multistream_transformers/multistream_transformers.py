@@ -11,6 +11,9 @@ from einops.layers.torch import Rearrange
 def exists(val):
     return val is not None
 
+def max_neg_value(t):
+    return -torch.finfo(t.dtype).max
+
 def rearrange_all(tensors, *args, **kwargs):
     return map(lambda t: rearrange(t, *args, **kwargs), tensors)
 
@@ -98,10 +101,16 @@ class Attention(nn.Module):
 
         sim = einsum('b i d, b j d -> b i j', q, k)
 
+        if exists(mask):
+            mask = repeat(mask, 'b n -> (b g h) n', h = h, g = g)
+            mask = rearrange(mask, 'b n -> b n ()') * rearrange(mask, 'b n -> b () n')
+            mask_value = max_neg_value(sim)
+            sim = sim.masked_fill(~mask, mask_value)
+
         if causal:
-            mask = torch.ones((n, n), device = device).triu(1).bool()
-            mask_value = -torch.finfo(sim.dtype).max
-            sim = sim.masked_fill(mask, mask_value)
+            causal_mask = torch.ones((n, n), device = device).triu(1).bool()
+            mask_value = max_neg_value(sim)
+            sim = sim.masked_fill(causal_mask, mask_value)
 
         attn = sim.softmax(dim = -1)
         out = einsum('b i j, b j d -> b i d', attn, v)
@@ -159,7 +168,7 @@ class MultistreamTransformer(nn.Module):
         x = rearrange(x, 'b n d -> b d n')
 
         for attn, ff in self.layers:
-            x = attn(x) + x
+            x = attn(x, mask = mask) + x
             x = ff(x) + x
 
         if self.num_streams > 1:
