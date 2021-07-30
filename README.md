@@ -25,7 +25,9 @@ model = MultistreamTransformer(
 )
 
 x = torch.randint(0, 256, (1, 1024))
-logits = model(x) # (1, 1024, 256)
+mask = torch.ones((2, 1024)).bool()
+
+logits = model(x, mask = mask) # (1, 1024, 256)
 ```
 
 ## Citations
