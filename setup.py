@@ -12,8 +12,7 @@ setup(
   keywords = [
     'artificial intelligence',
     'deep learning',
-    'transformers',
-    'efficient attention'
+    'transformers'
   ],
   install_requires=[
     'einops>=0.3',
