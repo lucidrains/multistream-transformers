@@ -65,7 +65,7 @@ class AutoregressiveWrapper(nn.Module):
         return out
 
     def forward(self, x, **kwargs):
-        xi, xo = x[:, :-1], x[: 1:]
+        xi, xo = x[:, :-1], x[:, 1:]
         out = self.net(xi, **kwargs)
         loss = F.cross_entropy(out.transpose(1, 2), xo, ignore_index = self.ignore_index)
         return loss
