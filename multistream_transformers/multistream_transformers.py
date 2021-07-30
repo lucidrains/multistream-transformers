@@ -11,6 +11,9 @@ from einops.layers.torch import Rearrange
 def exists(val):
     return val is not None
 
+def default(val, d):
+    return val if exists(val) else d
+
 def max_neg_value(t):
     return -torch.finfo(t.dtype).max
 
@@ -88,13 +91,15 @@ class Attention(nn.Module):
         input_dim = dim * groups
         inner_dim = dim_head * heads * groups
 
-        self.to_qkv = nn.Conv1d(input_dim, inner_dim * 3, 1, bias = False)
+        self.to_q = nn.Conv1d(input_dim, inner_dim, 1, bias = False)
+        self.to_kv = nn.Conv1d(input_dim, inner_dim * 2, 1, bias = False)
         self.to_out = nn.Conv1d(inner_dim, input_dim, 1)
 
-    def forward(self, x, mask = None):
+    def forward(self, x, mask = None, context = None):
         n, device, h, g, causal = x.shape[2], x.device, self.heads, self.groups, self.causal
+        context = default(context, x)
 
-        q, k, v = self.to_qkv(x).chunk(3, dim = 1)
+        q, k, v = (self.to_q(x), *self.to_kv(context).chunk(2, dim = 1))
         q, k, v = rearrange_all((q, k, v), 'b (g h d) n -> (b g h) n d', g = g, h = h)
 
         q = q * self.scale
@@ -141,11 +146,24 @@ class MultistreamTransformer(nn.Module):
 
         self.layers = nn.ModuleList([])
 
+        self.pre_layers = nn.ModuleList([
+            PreNorm(dim, Attention(dim = dim, dim_head = dim_head, heads = heads, causal = causal)),
+            PreNorm(dim, FeedForward(dim = dim, mult = ff_mult))
+        ])
+
         for _ in range(depth):
             self.layers.append(nn.ModuleList([
                 PreNorm(dim, Attention(dim = dim, dim_head = dim_head, heads = heads, causal = causal, groups = num_streams), groups = num_streams),
                 PreNorm(dim, FeedForward(dim = dim, mult = ff_mult, groups = num_streams), groups = num_streams)
             ]))
+
+        self.query = nn.Parameter(torch.randn(dim))
+        self.attn_pool = Attention(dim = dim, dim_head = dim_head, heads = heads)
+
+        self.post_layers = nn.ModuleList([
+            PreNorm(dim, Attention(dim = dim, dim_head = dim_head, heads = heads, causal = causal)),
+            PreNorm(dim, FeedForward(dim = dim, mult = ff_mult))
+        ])
 
         self.to_logits = nn.Sequential(
             Rearrange('b d n -> b n d'),
@@ -156,22 +174,38 @@ class MultistreamTransformer(nn.Module):
     def forward(self, x, mask = None):
         b, n, device = *x.shape, x.device
         x = self.token_emb(x)
+        dim = x.shape[-1]
 
         pos_emb = self.pos_emb(torch.arange(n, device = device))
         pos_emb = rearrange(pos_emb, 'n d -> () n d')
 
         x = x + pos_emb
+        x = rearrange(x, 'b n d -> b d n')
+
+        pre_attn, pre_ff = self.pre_layers
+        post_attn, post_ff = self.post_layers
+
+        x = pre_attn(x, mask = mask) + x
+        x = pre_ff(x) + x
+
+        layers = [x]
 
         if self.num_streams > 1:
-            x = repeat(x, 'b n d -> b n (s d)', s = self.num_streams)
-
-        x = rearrange(x, 'b n d -> b d n')
+            x = repeat(x, 'b d n -> b (s d) n', s = self.num_streams)
 
         for attn, ff in self.layers:
             x = attn(x, mask = mask) + x
             x = ff(x) + x
+            layers.append(x)
 
-        if self.num_streams > 1:
-            x = reduce(x, 'b (s d) n -> b d n', 'mean', s = self.num_streams)
+        layers = list(map(lambda t: rearrange(t, 'b (s d) n -> (b n) d s', d = dim), layers))
+        layer_tokens = torch.cat(layers, dim = -1)
+
+        query = repeat(self.query, 'd -> b d ()', b = layer_tokens.shape[0])
+        x = self.attn_pool(query, context = layer_tokens)
+        x = rearrange(x, '(b n) d () -> b d n', n = n)
+
+        x = post_attn(x, mask = mask) + x
+        x = post_ff(x) + x
 
         return self.to_logits(x)

@@ -10,6 +10,9 @@ import torch.optim as optim
 from torch.nn import functional as F
 from torch.utils.data import DataLoader, Dataset
 
+import wandb
+wandb.init(project='multistream')
+
 # constants
 
 NUM_BATCHES = int(1e5)
@@ -19,7 +22,7 @@ LEARNING_RATE = 2e-4
 VALIDATE_EVERY  = 100
 GENERATE_EVERY  = 500
 GENERATE_LENGTH = 512
-SEQ_LEN = 1024
+SEQ_LEN = 512
 
 # helpers
 
@@ -40,14 +43,17 @@ model = MultistreamTransformer(
     num_tokens = 256,
     dim = 512,
     max_seq_len = SEQ_LEN,
-    depth = 4,
+    depth = 2,
     heads = 8,
     causal = True,
-    num_streams = 2
+    num_streams = 4
 )
 
 model = AutoregressiveWrapper(model)
 model.cuda()
+
+wandb.run.name = 'num streams 4, depth 2 v3 - attn pooling after streams'
+wandb.run.save()
 
 # prepare enwik8 data
 
