@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 setup(
   name = 'multistream-transformers',
   packages = find_packages(),
-  version = '0.0.3',
+  version = '0.0.4',
   license='MIT',
   description = 'Multistream Transformers - Pytorch',
   author = 'Phil Wang',

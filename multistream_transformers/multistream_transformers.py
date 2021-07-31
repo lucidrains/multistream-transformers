@@ -122,6 +122,26 @@ class Attention(nn.Module):
         out = rearrange(out, '(b g h) n d -> b (g h d) n', h = h, g = g)
         return self.to_out(out)
 
+class TransformerBlock(nn.Module):
+    def __init__(
+        self,
+        *,
+        dim,
+        causal = False,
+        dim_head = 64,
+        heads = 8,
+        ff_mult = 4,
+        groups = 1
+    ):
+        super().__init__()
+        self.attn = PreNorm(dim, Attention(dim = dim, dim_head = dim_head, heads = heads, causal = causal, groups = groups), groups = groups)
+        self.ff = PreNorm(dim, FeedForward(dim = dim, mult = ff_mult, groups = groups), groups = groups)
+
+    def forward(self, x, mask = None):
+        x = self.attn(x, mask = mask) + x
+        x = self.ff(x) + x
+        return x
+
 # main class
 
 class MultistreamTransformer(nn.Module):
@@ -146,16 +166,16 @@ class MultistreamTransformer(nn.Module):
         self.pos_emb = nn.Embedding(max_seq_len, dim)
 
         self.layers = nn.ModuleList([])
+        self.pre_transformer_block = TransformerBlock(dim = dim, causal = causal, dim_head = dim_head, heads = heads)
 
         for _ in range(depth):
-            self.layers.append(nn.ModuleList([
-                PreNorm(dim, Attention(dim = dim, dim_head = dim_head, heads = heads, causal = causal, groups = num_streams), groups = num_streams),
-                PreNorm(dim, FeedForward(dim = dim, mult = ff_mult, groups = num_streams), groups = num_streams)
-            ]))
+            self.layers.append(TransformerBlock(dim = dim, causal = causal, dim_head = dim_head, heads = heads, groups = num_streams))
 
         if num_streams > 1:
             self.query = nn.Parameter(torch.randn(dim))
             self.attn_pool = Attention(dim = dim, dim_head = dim_head, heads = heads)
+
+        self.post_transformer_block = TransformerBlock(dim = dim, causal = causal, dim_head = dim_head, heads = heads,)
 
         self.to_logits = nn.Sequential(
             Rearrange('b d n -> b n d'),
@@ -173,14 +193,14 @@ class MultistreamTransformer(nn.Module):
         x = x + pos_emb
         x = rearrange(x, 'b n d -> b d n')
 
+        x = self.pre_transformer_block(x, mask = mask)
         layers = [x]
 
         if is_multistream:
             x = repeat(x, 'b d n -> b (s d) n', s = self.num_streams)
 
-        for attn, ff in self.layers:
-            x = attn(x, mask = mask) + x
-            x = ff(x) + x
+        for block in self.layers:
+            x = block(x, mask = mask)
             layers.append(x)
 
         if is_multistream:
@@ -191,4 +211,5 @@ class MultistreamTransformer(nn.Module):
             x = self.attn_pool(query, context = layer_tokens)
             x = rearrange(x, '(b n) d () -> b d n', n = n)
 
+        x = self.post_transformer_block(x, mask = mask)
         return self.to_logits(x)
