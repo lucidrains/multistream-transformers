@@ -19,7 +19,7 @@ LEARNING_RATE = 2e-4
 VALIDATE_EVERY  = 100
 GENERATE_EVERY  = 500
 GENERATE_LENGTH = 512
-SEQ_LEN = 1024
+SEQ_LEN = 512
 
 # helpers
 
@@ -87,8 +87,6 @@ for i in tqdm.tqdm(range(NUM_BATCHES), mininterval=10., desc='training'):
     for __ in range(GRADIENT_ACCUMULATE_EVERY):
         loss = model(next(train_loader))
         loss.backward()
-
-    wandb.log({'loss': loss.item()})
 
     print(f'training loss: {loss.item()}')
     torch.nn.utils.clip_grad_norm_(model.parameters(), 0.25)
