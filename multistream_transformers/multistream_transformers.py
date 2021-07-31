@@ -139,6 +139,7 @@ class MultistreamTransformer(nn.Module):
         num_streams = 1
     ):
         super().__init__()
+        self.dim = dim
         self.max_seq_len = max_seq_len
         self.num_streams = num_streams
         self.token_emb = nn.Embedding(num_tokens, dim)
@@ -146,24 +147,15 @@ class MultistreamTransformer(nn.Module):
 
         self.layers = nn.ModuleList([])
 
-        self.pre_layers = nn.ModuleList([
-            PreNorm(dim, Attention(dim = dim, dim_head = dim_head, heads = heads, causal = causal)),
-            PreNorm(dim, FeedForward(dim = dim, mult = ff_mult))
-        ])
-
         for _ in range(depth):
             self.layers.append(nn.ModuleList([
                 PreNorm(dim, Attention(dim = dim, dim_head = dim_head, heads = heads, causal = causal, groups = num_streams), groups = num_streams),
                 PreNorm(dim, FeedForward(dim = dim, mult = ff_mult, groups = num_streams), groups = num_streams)
             ]))
 
-        self.query = nn.Parameter(torch.randn(dim))
-        self.attn_pool = Attention(dim = dim, dim_head = dim_head, heads = heads)
-
-        self.post_layers = nn.ModuleList([
-            PreNorm(dim, Attention(dim = dim, dim_head = dim_head, heads = heads, causal = causal)),
-            PreNorm(dim, FeedForward(dim = dim, mult = ff_mult))
-        ])
+        if num_streams > 1:
+            self.query = nn.Parameter(torch.randn(dim))
+            self.attn_pool = Attention(dim = dim, dim_head = dim_head, heads = heads)
 
         self.to_logits = nn.Sequential(
             Rearrange('b d n -> b n d'),
@@ -172,9 +164,8 @@ class MultistreamTransformer(nn.Module):
         )
 
     def forward(self, x, mask = None):
-        b, n, device = *x.shape, x.device
+        b, n, d, device, is_multistream = *x.shape, self.dim, x.device, (self.num_streams > 1)
         x = self.token_emb(x)
-        dim = x.shape[-1]
 
         pos_emb = self.pos_emb(torch.arange(n, device = device))
         pos_emb = rearrange(pos_emb, 'n d -> () n d')
@@ -182,15 +173,9 @@ class MultistreamTransformer(nn.Module):
         x = x + pos_emb
         x = rearrange(x, 'b n d -> b d n')
 
-        pre_attn, pre_ff = self.pre_layers
-        post_attn, post_ff = self.post_layers
-
-        x = pre_attn(x, mask = mask) + x
-        x = pre_ff(x) + x
-
         layers = [x]
 
-        if self.num_streams > 1:
+        if is_multistream:
             x = repeat(x, 'b d n -> b (s d) n', s = self.num_streams)
 
         for attn, ff in self.layers:
@@ -198,14 +183,12 @@ class MultistreamTransformer(nn.Module):
             x = ff(x) + x
             layers.append(x)
 
-        layers = list(map(lambda t: rearrange(t, 'b (s d) n -> (b n) d s', d = dim), layers))
-        layer_tokens = torch.cat(layers, dim = -1)
+        if is_multistream:
+            layers = list(map(lambda t: rearrange(t, 'b (s d) n -> (b n) d s', d = d), layers))
+            layer_tokens = torch.cat(layers, dim = -1)
 
-        query = repeat(self.query, 'd -> b d ()', b = layer_tokens.shape[0])
-        x = self.attn_pool(query, context = layer_tokens)
-        x = rearrange(x, '(b n) d () -> b d n', n = n)
-
-        x = post_attn(x, mask = mask) + x
-        x = post_ff(x) + x
+            query = repeat(self.query, 'd -> b d ()', b = layer_tokens.shape[0])
+            x = self.attn_pool(query, context = layer_tokens)
+            x = rearrange(x, '(b n) d () -> b d n', n = n)
 
         return self.to_logits(x)

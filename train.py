@@ -10,9 +10,6 @@ import torch.optim as optim
 from torch.nn import functional as F
 from torch.utils.data import DataLoader, Dataset
 
-import wandb
-wandb.init(project='multistream')
-
 # constants
 
 NUM_BATCHES = int(1e5)
@@ -43,17 +40,14 @@ model = MultistreamTransformer(
     num_tokens = 256,
     dim = 512,
     max_seq_len = SEQ_LEN,
-    depth = 2,
+    depth = 4,
     heads = 8,
     causal = True,
-    num_streams = 4
+    num_streams = 2
 )
 
 model = AutoregressiveWrapper(model)
 model.cuda()
-
-wandb.run.name = 'num streams 4, depth 2 v3 - attn pooling after streams'
-wandb.run.save()
 
 # prepare enwik8 data
 
@@ -93,8 +87,6 @@ for i in tqdm.tqdm(range(NUM_BATCHES), mininterval=10., desc='training'):
     for __ in range(GRADIENT_ACCUMULATE_EVERY):
         loss = model(next(train_loader))
         loss.backward()
-
-    wandb.log({'loss': loss.item()})
 
     print(f'training loss: {loss.item()}')
     torch.nn.utils.clip_grad_norm_(model.parameters(), 0.25)
